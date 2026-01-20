@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import math
+import requests
 import rospy
 from sensor_msgs.msg import LaserScan
 
@@ -10,14 +11,15 @@ def clamp(x, lo, hi):
 
 class ObstacleAvoidHTTP:
     """
-    Commit 1 skeleton:
-    - subscribe /scan
-    - compute simple front min distance
-    - decision: forward or stop (no HTTP yet)
+    Commit 2:
+    - add HTTP control to ESP endpoint
+    - still only front sector + go/stop
     """
 
     def __init__(self):
-        # Parameters
+        self.esp_url = rospy.get_param("~esp_url", "http://172.20.10.2/js")
+        self.timeout = float(rospy.get_param("~http_timeout", 1.2))
+
         self.safe_front = float(rospy.get_param("~safe_front", 0.55))
         self.fwd = float(rospy.get_param("~fwd_speed", 0.10))
         self.cmd_hz = float(rospy.get_param("~cmd_hz", 5.0))
@@ -29,7 +31,7 @@ class ObstacleAvoidHTTP:
         rospy.Subscriber("/scan", LaserScan, self.on_scan, queue_size=1)
         rospy.Timer(rospy.Duration(1.0 / self.cmd_hz), self.control_loop)
 
-        rospy.loginfo("[avoidance] Commit1 started (no HTTP yet)")
+        rospy.loginfo(f"[avoidance] Commit2 started. ESP={self.esp_url}")
 
     def min_range_in_sector(self, scan: LaserScan, deg_from, deg_to):
         a_min = scan.angle_min
@@ -61,22 +63,25 @@ class ObstacleAvoidHTTP:
         self.last_front = self.min_range_in_sector(scan, -self.front_deg, self.front_deg)
         self.have_scan = True
 
-    def set_motors(self, left, right):
-        # placeholder for later HTTP
-        rospy.loginfo_throttle(1.0, f"[motors] L={left:.2f} R={right:.2f}")
+    def send_lr(self, left, right):
+        payload = {"T": 1, "L": float(left), "R": float(right)}
+        try:
+            requests.post(self.esp_url, json=payload, timeout=self.timeout)
+        except requests.RequestException as e:
+            rospy.logwarn_throttle(2.0, f"[avoidance] HTTP error: {e}")
 
     def control_loop(self, _evt):
         if not self.have_scan:
-            self.set_motors(0.0, 0.0)
+            self.send_lr(0.0, 0.0)
             return
 
         front = self.last_front
         rospy.loginfo_throttle(1.0, f"[scan] front={front:.2f}")
 
         if front < self.safe_front:
-            self.set_motors(0.0, 0.0)
+            self.send_lr(0.0, 0.0)
         else:
-            self.set_motors(self.fwd, self.fwd)
+            self.send_lr(self.fwd, self.fwd)
 
 
 def main():
