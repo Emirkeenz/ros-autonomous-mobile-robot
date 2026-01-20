@@ -11,27 +11,36 @@ def clamp(x, lo, hi):
 
 class ObstacleAvoidHTTP:
     """
-    Commit 2:
-    - add HTTP control to ESP endpoint
-    - still only front sector + go/stop
-    """
+       Commit 3:
+       - compute front/left/right min distances
+       - if obstacle in front => turn to the clearer side
+       """
 
     def __init__(self):
         self.esp_url = rospy.get_param("~esp_url", "http://172.20.10.2/js")
         self.timeout = float(rospy.get_param("~http_timeout", 1.2))
 
         self.safe_front = float(rospy.get_param("~safe_front", 0.55))
+        self.safe_side = float(rospy.get_param("~safe_side", 0.45))
         self.fwd = float(rospy.get_param("~fwd_speed", 0.10))
+        self.turn = float(rospy.get_param("~turn_speed", 0.12))
         self.cmd_hz = float(rospy.get_param("~cmd_hz", 5.0))
         self.front_deg = float(rospy.get_param("~front_sector_deg", 25.0))
 
+        self.left_from = float(rospy.get_param("~left_from_deg", 60.0))
+        self.left_to = float(rospy.get_param("~left_to_deg", 120.0))
+        self.right_from = float(rospy.get_param("~right_from_deg", -120.0))
+        self.right_to = float(rospy.get_param("~right_to_deg", -60.0))
+
         self.last_front = float("inf")
+        self.last_left = float("inf")
+        self.last_right = float("inf")
         self.have_scan = False
 
         rospy.Subscriber("/scan", LaserScan, self.on_scan, queue_size=1)
         rospy.Timer(rospy.Duration(1.0 / self.cmd_hz), self.control_loop)
 
-        rospy.loginfo(f"[avoidance] Commit2 started. ESP={self.esp_url}")
+        rospy.loginfo(f"[avoidance] Commit3 started. ESP={self.esp_url}")
 
     def min_range_in_sector(self, scan: LaserScan, deg_from, deg_to):
         a_min = scan.angle_min
@@ -61,6 +70,9 @@ class ObstacleAvoidHTTP:
 
     def on_scan(self, scan: LaserScan):
         self.last_front = self.min_range_in_sector(scan, -self.front_deg, self.front_deg)
+        self.last_left = self.min_range_in_sector(scan, self.left_from, self.left_to)
+        self.last_right = self.min_range_in_sector(scan, self.right_from, self.right_to)
+
         self.have_scan = True
 
     def send_lr(self, left, right):
@@ -75,13 +87,26 @@ class ObstacleAvoidHTTP:
             self.send_lr(0.0, 0.0)
             return
 
-        front = self.last_front
-        rospy.loginfo_throttle(1.0, f"[scan] front={front:.2f}")
+        front, left, right = self.last_front, self.last_left, self.last_right
+        rospy.loginfo_throttle(1.0, f"[scan] front={front:.2f} left={left:.2f} right={right:.2f}")
 
         if front < self.safe_front:
-            self.send_lr(0.0, 0.0)
-        else:
-            self.send_lr(self.fwd, self.fwd)
+            # turn to side with more free space
+            if left > right:
+                self.send_lr(-self.turn, self.turn)  # left turn
+            else:
+                self.send_lr(self.turn, -self.turn)  # right turn
+            return
+
+            # if too close to a side, steer away
+        if right < self.safe_side:
+            self.send_lr(-self.turn, self.turn)
+            return
+        if left < self.safe_side:
+            self.send_lr(self.turn, -self.turn)
+            return
+
+        self.send_lr(self.fwd, self.fwd)
 
 
 def main():
