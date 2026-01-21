@@ -79,7 +79,7 @@ class ObstacleAvoidHTTP:
         rospy.Timer(rospy.Duration(1.0 / self.cmd_hz), self.control_loop)
 
         rospy.loginfo(
-            f"[obstacle_http_node] Started. ESP={self.esp_url} mode={self.mode} cmd_hz={self.cmd_hz} "
+            f"[avoidance] Started. ESP={self.esp_url} mode={self.mode} cmd_hz={self.cmd_hz} "
             f"min_send_dt={self.min_send_dt}"
         )
         self.apply_mode_side_effects()
@@ -87,11 +87,11 @@ class ObstacleAvoidHTTP:
     def on_mode(self, msg: String):
         new_mode = (msg.data or "").strip().upper()
         if new_mode not in ("STOP", "MAP", "AUTO"):
-            rospy.logwarn(f"[obstacle_http_node] Unknown mode '{msg.data}'. Use STOP/MAP/AUTO.")
+            rospy.logwarn(f"[avoidance] Unknown mode '{msg.data}'. Use STOP/MAP/AUTO.")
             return
         if new_mode != self.mode:
             self.mode = new_mode
-            rospy.loginfo(f"[obstacle_http_node] Mode -> {self.mode}")
+            rospy.loginfo(f"[avoidance] Mode -> {self.mode}")
             self.apply_mode_side_effects()
 
     def apply_mode_side_effects(self):
@@ -127,7 +127,7 @@ class ObstacleAvoidHTTP:
             self.last_sent = (left, right)
             self.last_sent_t = time.time()
         except requests.RequestException as e:
-            rospy.logwarn_throttle(2.0, f"[obstacle_http_node] HTTP error: {e}")
+            rospy.logwarn_throttle(2.0, f"[avoidance] HTTP error: {e}")
 
     def min_range_in_sector(self, scan: LaserScan, deg_from, deg_to):
         a_min = scan.angle_min
@@ -216,7 +216,7 @@ class ObstacleAvoidHTTP:
 
 
 def main():
-    rospy.init_node("obstacle_http_node")
+    rospy.init_node("avoidance")
     ObstacleAvoidHTTP()
     rospy.spin()
 
