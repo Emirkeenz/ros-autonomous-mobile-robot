@@ -220,5 +220,5 @@ def main():
     ObstacleAvoidHTTP()
     rospy.spin()
 
-if name == "__main__":
+if __name__ == "__main__":
     main()
