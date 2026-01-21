@@ -3,6 +3,7 @@ import math
 import requests
 import rospy
 from sensor_msgs.msg import LaserScan
+from std_msgs.msg import String
 
 
 def clamp(x, lo, hi):
@@ -11,10 +12,12 @@ def clamp(x, lo, hi):
 
 class ObstacleAvoidHTTP:
     """
-       Commit 3:
-       - compute front/left/right min distances
-       - if obstacle in front => turn to the clearer side
-       """
+    Commit 4:
+    - add mode control via param + /robot_mode
+    - STOP: motors 0
+    - MAP: do not send motion commands
+    - AUTO: obstacle avoidance active
+    """
 
     def __init__(self):
         self.esp_url = rospy.get_param("~esp_url", "http://172.20.10.2/js")
@@ -22,9 +25,12 @@ class ObstacleAvoidHTTP:
 
         self.safe_front = float(rospy.get_param("~safe_front", 0.55))
         self.safe_side = float(rospy.get_param("~safe_side", 0.45))
+
         self.fwd = float(rospy.get_param("~fwd_speed", 0.10))
         self.turn = float(rospy.get_param("~turn_speed", 0.12))
+
         self.cmd_hz = float(rospy.get_param("~cmd_hz", 5.0))
+
         self.front_deg = float(rospy.get_param("~front_sector_deg", 25.0))
 
         self.left_from = float(rospy.get_param("~left_from_deg", 60.0))
@@ -32,16 +38,34 @@ class ObstacleAvoidHTTP:
         self.right_from = float(rospy.get_param("~right_from_deg", -120.0))
         self.right_to = float(rospy.get_param("~right_to_deg", -60.0))
 
+        self.mode = rospy.get_param("~mode", "STOP").upper()
+
         self.last_front = float("inf")
         self.last_left = float("inf")
         self.last_right = float("inf")
         self.have_scan = False
 
         rospy.Subscriber("/scan", LaserScan, self.on_scan, queue_size=1)
+        rospy.Subscriber("/robot_mode", String, self.on_mode, queue_size=5)
+
         rospy.Timer(rospy.Duration(1.0 / self.cmd_hz), self.control_loop)
 
-        rospy.loginfo(f"[avoidance] Commit3 started. ESP={self.esp_url}")
+        rospy.loginfo(f"[avoidance] Commit4 started. mode={self.mode} ESP={self.esp_url}")
 
+        if self.mode == "STOP":
+            self.send_lr(0.0, 0.0)
+
+    def on_mode(self, msg: String):
+        new_mode = (msg.data or "").strip().upper()
+        if new_mode not in ("STOP", "MAP", "AUTO"):
+            rospy.logwarn(f"[avoidance] Unknown mode '{msg.data}'. Use STOP/MAP/AUTO.")
+            return
+        if new_mode != self.mode:
+            self.mode = new_mode
+            rospy.loginfo(f"[avoidance] Mode -> {self.mode}")
+            if self.mode == "STOP":
+                self.send_lr(0.0, 0.0)
+    
     def min_range_in_sector(self, scan: LaserScan, deg_from, deg_to):
         a_min = scan.angle_min
         a_inc = scan.angle_increment
@@ -72,7 +96,6 @@ class ObstacleAvoidHTTP:
         self.last_front = self.min_range_in_sector(scan, -self.front_deg, self.front_deg)
         self.last_left = self.min_range_in_sector(scan, self.left_from, self.left_to)
         self.last_right = self.min_range_in_sector(scan, self.right_from, self.right_to)
-
         self.have_scan = True
 
     def send_lr(self, left, right):
@@ -83,22 +106,27 @@ class ObstacleAvoidHTTP:
             rospy.logwarn_throttle(2.0, f"[avoidance] HTTP error: {e}")
 
     def control_loop(self, _evt):
+        if self.mode == "STOP":
+            self.send_lr(0.0, 0.0)
+            return
+
+        if self.mode == "MAP":
+            return
+
         if not self.have_scan:
             self.send_lr(0.0, 0.0)
             return
 
         front, left, right = self.last_front, self.last_left, self.last_right
-        rospy.loginfo_throttle(1.0, f"[scan] front={front:.2f} left={left:.2f} right={right:.2f}")
+        rospy.loginfo_throttle(1.0, f"[AUTO] front={front:.2f} left={left:.2f} right={right:.2f}")
 
         if front < self.safe_front:
-            # turn to side with more free space
             if left > right:
-                self.send_lr(-self.turn, self.turn)  # left turn
+                self.send_lr(-self.turn, self.turn)
             else:
-                self.send_lr(self.turn, -self.turn)  # right turn
+                self.send_lr(self.turn, -self.turn)
             return
 
-            # if too close to a side, steer away
         if right < self.safe_side:
             self.send_lr(-self.turn, self.turn)
             return
@@ -107,7 +135,6 @@ class ObstacleAvoidHTTP:
             return
 
         self.send_lr(self.fwd, self.fwd)
-
 
 def main():
     rospy.init_node("obstacle_http_node")
