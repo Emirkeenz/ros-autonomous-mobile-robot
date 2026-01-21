@@ -215,10 +215,10 @@ class ObstacleAvoidHTTP:
         self.send_lr(self.fwd - steer, self.fwd + steer)
 
 
-    def main():
-        rospy.init_node("obstacle_http_node")
-        ObstacleAvoidHTTP()
-        rospy.spin()
+def main():
+    rospy.init_node("obstacle_http_node")
+    ObstacleAvoidHTTP()
+    rospy.spin()
 
-    if name == "__main__":
-        main()
+if name == "__main__":
+    main()
