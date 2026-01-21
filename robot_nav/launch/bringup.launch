@@ -1,0 +1,102 @@
+<!-- ~/catkin_ws/src/robot_nav/launch/bringup.launch -->
+<launch>
+
+  <!-- ================= SYSTEM ================= -->
+  <param name="/use_sim_time" value="false"/>
+
+  <!-- ================= LIDAR ================= -->
+  <param name="/rplidarNode/serial_port" value="/dev/ttyUSB0" />
+  <include file="$(find rplidar_ros)/launch/rplidar_a1.launch" />
+
+  <!-- ================= TF ================= -->
+  <node pkg="tf" type="static_transform_publisher"
+        name="tf_basefootprint_to_baselink"
+        args="0 0 0 0 0 0 base_footprint base_link 100" />
+
+  <node pkg="tf" type="static_transform_publisher"
+        name="tf_baselink_to_laser"
+        args="0.10 0 0.15 0 0 0 base_link laser 100" />
+
+  <node pkg="tf" type="static_transform_publisher"
+        name="tf_nav_to_basefootprint"
+        args="0 0 0 0 0 0 nav base_footprint 100" />
+
+  <!-- ================= SLAM ================= -->
+  <node pkg="hector_mapping" type="hector_mapping"
+        name="hector_mapping" output="screen">
+
+    <param name="base_frame" value="base_footprint"/>
+    <param name="odom_frame" value="nav"/>
+    <param name="map_frame" value="map"/>
+    <param name="scan_topic" value="scan"/>
+
+    <param name="map_resolution" value="0.05"/>
+    <param name="map_size" value="2048"/>
+    <param name="map_start_x" value="0.5"/>
+    <param name="map_start_y" value="0.5"/>
+
+    <param name="map_update_distance_thresh" value="0.4"/>
+    <param name="map_update_update_angle_thresh" value="0.06"/>
+
+    <param name="pub_map_odom_transform" value="true"/>
+    <param name="use_tf_scan_transformation" value="true"/>
+  </node>
+
+  <node pkg="hector_trajectory_server" type="hector_trajectory_server"
+        name="hector_trajectory_server" output="screen">
+
+    <param name="source_frame_name" value="scanmatcher_frame"/>
+    <param name="target_frame_name" value="/map"/>
+    <param name="trajectory_update_rate" value="4.0"/>
+    <param name="trajectory_publish_rate" value="0.25"/>
+  </node>
+
+  <!-- ================= OBSTACLE AVOIDANCE ================= -->
+  <node pkg="robot_nav" type="avoidance.py"
+        name="avoidance" output="screen">
+
+    <!-- If you want it to start moving immediately, uncomment:
+    <param name="mode" value="AUTO"/>
+    -->
+
+    <!-- ESP -->
+    <param name="esp_url" value="http://172.20.10.2/js"/>
+    <param name="http_timeout" value="1.2"/>
+
+    <!-- Control -->
+    <param name="cmd_hz" value="5.0"/>
+    <param name="cmd_eps" value="0.01"/>
+
+    <!-- hard rate-limit for HTTP sends (seconds) -->
+    <param name="min_send_dt" value="0.15"/>
+
+    <!-- Safety distances (meters) -->
+    <param name="safe_front" value="0.55"/>
+    <param name="safe_side" value="0.45"/>
+
+    <!-- Speeds -->
+    <param name="fwd_speed" value="0.10"/>
+    <param name="turn_speed" value="0.12"/>
+
+    <!-- Behavior tuning -->
+    <param name="hysteresis" value="0.05"/>
+    <param name="turn_time" value="0.45"/>
+
+    <!-- LiDAR sectors (degrees) -->
+    <param name="front_sector_deg" value="25.0"/>
+
+    <param name="left_from_deg" value="60.0"/>
+    <param name="left_to_deg" value="120.0"/>
+
+    <param name="right_from_deg" value="-120.0"/>
+    <param name="right_to_deg" value="-60.0"/>
+
+  </node>
+
+  <!-- ================= MAP AUTOSAVER ================= -->
+  <node pkg="robot_nav" type="map_autosaver.py"
+        name="map_autosaver" output="screen">
+    <param name="out_dir" value="$(env HOME)/maps"/>
+  </node>
+
+</launch>
