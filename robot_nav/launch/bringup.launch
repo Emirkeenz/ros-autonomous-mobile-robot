@@ -62,6 +62,7 @@
     <!-- ESP -->
     <param name="esp_url" value="http://172.20.10.2/js"/>
     <param name="http_timeout" value="1.2"/>
+    <param name="http_connect_timeout" value="0.3"/>
 
     <!-- Control -->
     <param name="cmd_hz" value="5.0"/>
@@ -81,13 +82,12 @@
     <!-- Behavior tuning -->
     <param name="hysteresis" value="0.05"/>
     <param name="turn_time" value="0.45"/>
+    <param name="arc_factor" value="0.55"/>
 
     <!-- LiDAR sectors (degrees) -->
     <param name="front_sector_deg" value="25.0"/>
-
     <param name="left_from_deg" value="60.0"/>
     <param name="left_to_deg" value="120.0"/>
-
     <param name="right_from_deg" value="-120.0"/>
     <param name="right_to_deg" value="-60.0"/>
 

@@ -13,10 +13,11 @@ def clamp(x, lo, hi):
 
 class ObstacleAvoidHTTP:
     """
-    Commit:
-    - add hysteresis param (kept for tuning)
-    - add TURN state machine + turn_time for stable turning
-    - add mild steering while moving forward based on left-right diff
+    Improvements:
+    - Immediately "kick" motion on mode switch to AUTO (robot auto -> start moving right away)
+    - Fix TURN heartbeat: keep sending commands (force=True) to avoid ESP watchdog stop
+    - Turn by ARC (no reverse) to reduce current spikes and "shutdowns" on turns
+    - Use hysteresis and safety-based early exit from TURN
     """
 
     def __init__(self):
@@ -41,6 +42,10 @@ class ObstacleAvoidHTTP:
         # Speeds
         self.fwd = float(rospy.get_param("~fwd_speed", 0.10))
         self.turn = float(rospy.get_param("~turn_speed", 0.12))
+
+        # ARC turning factor (0..1): smaller => sharper turn, but still forward
+        self.arc_factor = float(rospy.get_param("~arc_factor", 0.55))
+        self.arc_factor = clamp(self.arc_factor, 0.2, 0.95)
 
         # Sectors (degrees)
         self.front_deg = float(rospy.get_param("~front_sector_deg", 25.0))  # -25..+25
@@ -80,9 +85,10 @@ class ObstacleAvoidHTTP:
 
         rospy.loginfo(
             f"[avoidance] Started. ESP={self.esp_url} mode={self.mode} cmd_hz={self.cmd_hz} "
-            f"min_send_dt={self.min_send_dt}"
+            f"min_send_dt={self.min_send_dt} arc_factor={self.arc_factor}"
         )
-        self.apply_mode_side_effects()
+
+        self.apply_mode_side_effects(initial=True)
 
     def on_mode(self, msg: String):
         new_mode = (msg.data or "").strip().upper()
@@ -90,16 +96,38 @@ class ObstacleAvoidHTTP:
             rospy.logwarn(f"[avoidance] Unknown mode '{msg.data}'. Use STOP/MAP/AUTO.")
             return
         if new_mode != self.mode:
+            prev = self.mode
             self.mode = new_mode
             rospy.loginfo(f"[avoidance] Mode -> {self.mode}")
-            self.apply_mode_side_effects()
+            self.apply_mode_side_effects(prev_mode=prev, initial=False)
 
-    def apply_mode_side_effects(self):
+    def apply_mode_side_effects(self, prev_mode=None, initial=False):
+        # Reset turning state when stopping
         if self.mode == "STOP":
             self.state = "GO"
             self.turn_dir = 0
             self.turn_until = 0.0
             self.send_lr(0.0, 0.0, force=True)
+            return
+
+        # MAP: do nothing (mapping teleop etc.)
+        if self.mode == "MAP":
+            # optional: stop motors when entering MAP
+            if prev_mode != "MAP" and not initial:
+                self.send_lr(0.0, 0.0, force=True)
+            return
+
+        # AUTO: kick-start so "robot auto" immediately moves
+        if self.mode == "AUTO":
+            self.state = "GO"
+            self.turn_dir = 0
+            self.turn_until = 0.0
+
+            # If we already have scan data, start moving immediately.
+            # If no scan yet, control_loop will stop until scan arrives.
+            if self.have_scan:
+                # One forced command to ensure ESP gets it instantly.
+                self.send_lr(self.fwd, self.fwd, force=True)
 
     def send_lr(self, left, right, force=False):
         left = float(left)
@@ -137,6 +165,9 @@ class ObstacleAvoidHTTP:
         if n == 0 or a_inc == 0.0:
             return float("inf")
 
+        rmin = getattr(scan, "range_min", 0.0) or 0.0
+        rmax = getattr(scan, "range_max", float("inf")) or float("inf")
+
         def idx_for_deg(deg):
             ang = math.radians(deg)
             i = int(round((ang - a_min) / a_inc))
@@ -149,7 +180,12 @@ class ObstacleAvoidHTTP:
 
         best = None
         for r in scan.ranges[i0:i1 + 1]:
-            if r is None or math.isinf(r) or math.isnan(r) or r <= 0.0:
+            if r is None or math.isinf(r) or math.isnan(r):
+                continue
+            if r <= 0.0:
+                continue
+            # respect scan min/max
+            if r < rmin or r > rmax:
                 continue
             if best is None or r < best:
                 best = r
@@ -167,13 +203,16 @@ class ObstacleAvoidHTTP:
         self.turn_until = time.time() + self.turn_time
 
     def control_loop(self, _evt):
+        # STOP: actively keep motors stopped
         if self.mode == "STOP":
             self.send_lr(0.0, 0.0)
             return
 
+        # MAP: do not interfere
         if self.mode == "MAP":
             return
 
+        # AUTO but no scan yet: stop
         if not self.have_scan:
             self.send_lr(0.0, 0.0)
             return
@@ -185,31 +224,51 @@ class ObstacleAvoidHTTP:
 
         now = time.time()
 
+        # TURN state: keep sending (heartbeat) and exit early when safe
         if self.state == "TURN":
-            if now < self.turn_until:
-                if self.turn_dir > 0:
-                    self.send_lr(-self.turn, self.turn)   # turn left
-                else:
-                    self.send_lr(self.turn, -self.turn)   # turn right
-                return
-            else:
+            safe_front_clear = front > (self.safe_front + self.hys)
+            safe_sides_clear = (left > (self.safe_side + self.hys)) and (right > (self.safe_side + self.hys))
+
+            # Early exit if cleared
+            if safe_front_clear and safe_sides_clear:
                 self.state = "GO"
                 self.turn_dir = 0
+            else:
+                if now < self.turn_until:
+                    # ARC turn to reduce current spikes (no reverse)
+                    if self.turn_dir > 0:
+                        # arc left: left slower, right faster
+                        L = self.fwd * self.arc_factor
+                        R = self.fwd
+                    else:
+                        # arc right
+                        L = self.fwd
+                        R = self.fwd * self.arc_factor
 
-        # Turn if obstacle ahead
+                    # Force-send to avoid ESP watchdog stop
+                    self.send_lr(L, R, force=True)
+                    return
+                else:
+                    self.state = "GO"
+                    self.turn_dir = 0
+
+        # Decide actions in GO
+        # Obstacle ahead -> turn towards more open side
         if front < self.safe_front:
             self.start_turn(+1 if left > right else -1)
             return
 
-        # Nudge away if too close to a side
+        # Too close to right -> steer/turn left
         if right < self.safe_side:
             self.start_turn(+1)
             return
+
+        # Too close to left -> steer/turn right
         if left < self.safe_side:
             self.start_turn(-1)
             return
 
-        # Mild steering while moving forward
+        # Mild steering while moving forward (keep it small)
         diff = (left - right)
         steer = clamp(diff * 0.10, -0.04, 0.04)
         self.send_lr(self.fwd - steer, self.fwd + steer)
@@ -219,6 +278,7 @@ def main():
     rospy.init_node("avoidance")
     ObstacleAvoidHTTP()
     rospy.spin()
+
 
 if __name__ == "__main__":
     main()
